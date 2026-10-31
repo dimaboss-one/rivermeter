@@ -59,12 +59,20 @@ map.on('moveend', loadView);
 
 map.on('click', async (e) => {
   const p = [e.lngLat.lng, e.lngLat.lat];
+  if (map.getZoom() < 11) return status('Приблизьтесь к реке (масштаб 11+).');
+  await ensureRivers([p[0] - 0.03, p[1] - 0.02, p[0] + 0.03, p[1] + 0.02]).catch((err) => status('Ошибка загрузки рек: ' + err.message));
   await addPoint(p);
 });
 
+// радиус притягивания: 40 px экрана в метрах
+function snapRadius() {
+  const mpp = (156543.03 * Math.cos((map.getCenter().lat * Math.PI) / 180)) / 2 ** map.getZoom();
+  return Math.max(30, 40 * mpp);
+}
+
 async function addPoint(p) {
-  const s = graph.snap(p);
-  if (!s) return status('Рядом нет реки (в радиусе 400 м). Кликните ближе к воде.');
+  const s = graph.snap(p, snapRadius());
+  if (!s) return status('Рядом с кликом нет реки в загруженных данных. Кликните ближе к синей линии реки.');
   const prev = wps.at(-1);
   if (prev) {
     const leg = graph.path(prev.id, s.id);
@@ -82,7 +90,7 @@ function makeMarker(lonlat) {
   m.on('dragend', () => {
     const i = wps.findIndex((w) => w.marker === m);
     const ll = m.getLngLat();
-    const s = graph.snap([ll.lng, ll.lat]);
+    const s = graph.snap([ll.lng, ll.lat], snapRadius());
     if (!s) { m.setLngLat(wps[i].lonlat); return; }
     const old = wps[i];
     wps[i] = { ...old, id: s.id, lonlat: s.point };

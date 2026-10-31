@@ -7,12 +7,15 @@ const ENDPOINTS = [
 
 async function overpass(q) {
   let err;
-  for (const url of ENDPOINTS) {
-    try {
-      const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q) });
-      if (r.ok) return await r.json();
-      err = new Error('Overpass ' + r.status);
-    } catch (e) { err = e; }
+  for (let round = 0; round < 3; round++) {
+    for (const url of ENDPOINTS) {
+      try {
+        const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q) });
+        if (r.ok) return await r.json();
+        err = new Error('Overpass ' + r.status);
+      } catch (e) { err = e; }
+    }
+    await new Promise((r) => setTimeout(r, 1500 * (round + 1)));
   }
   throw err;
 }
@@ -31,17 +34,19 @@ const WW = '^(dam|weir|lock_gate|waterfall|rapids)$';
 
 export async function loadObstacles(bounds) {
   const b = bb(bounds);
-  const q = `[out:json][timeout:90];(
-way["bridge"]["highway"](${b});
-way["bridge"]["railway"](${b});
-way["man_made"="bridge"](${b});
-way["power"~"^(line|minor_line|cable)$"](${b});
-way["waterway"~"${WW}"](${b});
-node["waterway"~"${WW}"](${b});
-node["ford"="yes"](${b});
-way["ford"="yes"](${b});
-);out geom;`;
-  return (await overpass(q)).elements;
+  const parts = [
+    `way["bridge"]["highway"](${b});way["bridge"]["railway"](${b});way["man_made"="bridge"](${b});`,
+    `way["power"~"^(line|minor_line|cable)$"](${b});`,
+    `way["waterway"~"${WW}"](${b});node["waterway"~"${WW}"](${b});node["ford"="yes"](${b});way["ford"="yes"](${b});`,
+  ];
+  const out = [];
+  let failed = 0;
+  for (const p of parts) {
+    try { out.push(...(await overpass(`[out:json][timeout:90];(${p});out geom;`)).elements); }
+    catch { failed++; }
+  }
+  if (failed === parts.length) throw new Error('сервер данных не отвечает, повторите позже');
+  return out;
 }
 
 function classify(t = {}) {
