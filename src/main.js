@@ -60,7 +60,6 @@ map.on('moveend', loadView);
 map.on('click', async (e) => {
   const p = [e.lngLat.lng, e.lngLat.lat];
   if (map.getZoom() < 11) return status('Приблизьтесь к реке (масштаб 11+).');
-  await ensureRivers([p[0] - 0.03, p[1] - 0.02, p[0] + 0.03, p[1] + 0.02]).catch((err) => status('Ошибка загрузки рек: ' + err.message));
   await addPoint(p);
 });
 
@@ -71,7 +70,12 @@ function snapRadius() {
 }
 
 async function addPoint(p) {
-  const s = graph.snap(p, snapRadius());
+  let s = graph.snap(p, snapRadius());
+  if (!s) {
+    try { await ensureRivers([p[0] - 0.012, p[1] - 0.008, p[0] + 0.012, p[1] + 0.008]); }
+    catch (err) { return status('Ошибка загрузки рек: ' + err.message + '. Нажмите ещё раз.'); }
+    s = graph.snap(p, snapRadius());
+  }
   if (!s) return status('Рядом с кликом нет реки в загруженных данных. Кликните ближе к синей линии реки.');
   const prev = wps.at(-1);
   if (prev) {
@@ -205,3 +209,6 @@ async function restore() {
     for (const p of s.pts) await addPoint(p);
   } catch (e) { console.warn(e); }
 }
+
+window.addEventListener('error', (e) => status('Ошибка: ' + e.message));
+window.addEventListener('unhandledrejection', (e) => status('Ошибка: ' + (e.reason?.message || e.reason)));
