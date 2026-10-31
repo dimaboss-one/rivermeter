@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Замер реки — байдарка</title>
+  <link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+  <div id="map"></div>
+  <aside id="panel">
+    <input id="name" placeholder="Название маршрута" value="Маршрут">
+    <div class="row">
+      <button id="undo">↶ Убрать точку</button>
+      <button id="clear">Сбросить</button>
+      <button id="pdf" class="primary">PDF A4</button>
+    </div>
+    <div id="status">Приблизьтесь к реке (масштаб 11+) и ставьте точки кликом.</div>
+    <div id="total"></div>
+    <h3>Точки</h3>
+    <table id="pts"></table>
+    <h3>Реестр объектов</h3>
+    <table id="objs"></table>
+  </aside>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
