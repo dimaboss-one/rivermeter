@@ -1,52 +1,37 @@
 import { segIntersect, projectOnSegment, haversine } from './geo.js';
 
-const ENDPOINTS = [
-  'https://overpass-api.de/api/interpreter',
-  'https://overpass.kumi.systems/api/interpreter',
-];
+const BASE = import.meta.env.BASE_URL + 'data/';
+const cache = new Map();
 
-async function overpass(q) {
-  let err;
-  for (let round = 0; round < 3; round++) {
-    for (const url of ENDPOINTS) {
-      try {
-        const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q) });
-        if (r.ok) return await r.json();
-        err = new Error('Overpass ' + r.status);
-      } catch (e) { err = e; }
-    }
-    await new Promise((r) => setTimeout(r, 1500 * (round + 1)));
+async function getJson(url) {
+  if (!cache.has(url)) {
+    cache.set(url, fetch(url).then((r) => (r.ok ? r.json() : [])).catch((e) => { cache.delete(url); throw e; }));
   }
-  throw err;
+  return cache.get(url);
 }
 
-const bb = ([w, s, e, n]) => `${s},${w},${n},${e}`;
+async function tilesFor(kind, [w, s, e, n]) {
+  const idx = await getJson(BASE + 'index.json');
+  const T = idx.tile;
+  const have = new Set(idx[kind]);
+  const out = [];
+  for (let x = Math.floor(w / T); x <= Math.floor(e / T); x++)
+    for (let y = Math.floor(s / T); y <= Math.floor(n / T); y++)
+      if (have.has(x + '_' + y)) out.push(...(await getJson(`${BASE}${kind}/${x}_${y}.json`)));
+  return out;
+}
 
 export async function loadRivers(bounds) {
-  const q = `[out:json][timeout:60];way["waterway"~"^(river|stream|canal|drain|ditch)$"]["tunnel"!="culvert"](${bb(bounds)});out geom;`;
-  const j = await overpass(q);
-  return j.elements
-    .filter((e) => e.geometry)
-    .map((e) => ({ id: e.id, name: e.tags?.name, coords: e.geometry.map((g) => [g.lon, g.lat]) }));
+  return (await tilesFor('rivers', bounds)).map((r) => ({ id: r.id, name: r.n, coords: r.c }));
 }
 
-const WW = '^(dam|weir|lock_gate|waterfall|rapids)$';
+const ICONS = { power: '⚡', dam: '🚧', weir: '🚧', lock: '🚧', waterfall: '🌊', rapids: '🌊', ford: '〰' };
 
 export async function loadObstacles(bounds) {
-  const b = bb(bounds);
-  const parts = [
-    `way["bridge"]["highway"](${b});way["bridge"]["railway"](${b});way["man_made"="bridge"](${b});`,
-    `way["power"~"^(line|minor_line|cable)$"](${b});`,
-    `way["waterway"~"${WW}"](${b});node["waterway"~"${WW}"](${b});node["ford"="yes"](${b});way["ford"="yes"](${b});`,
-  ];
-  const out = [];
-  let failed = 0;
-  for (const p of parts) {
-    try { out.push(...(await overpass(`[out:json][timeout:90];(${p});out geom;`)).elements); }
-    catch { failed++; }
-  }
-  if (failed === parts.length) throw new Error('сервер данных не отвечает, повторите позже');
-  return out;
+  return (await tilesFor('objs', bounds)).map((o) => ({
+    type: 'node', id: o.id, lon: o.x, lat: o.y, name: o.n,
+    meta: { type: o.t, icon: ICONS[o.k] || '🌉' },
+  }));
 }
 
 function classify(t = {}) {
@@ -85,8 +70,8 @@ export function locateObjects(route, elements) {
     }
   const found = [];
   for (const el of elements) {
-    const meta = classify(el.tags);
-    const name = el.tags?.name || el.tags?.ref || '';
+    const meta = el.meta || classify(el.tags);
+    const name = el.name ?? (el.tags?.name || el.tags?.ref || '');
     if (el.type === 'node') {
       const p = [el.lon, el.lat];
       let best = null;
