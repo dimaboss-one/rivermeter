@@ -30,7 +30,7 @@ const ICONS = { power: '⚡', dam: '🚧', weir: '🚧', lock: '🚧', waterfall
 export async function loadObstacles(bounds) {
   return (await tilesFor('objs', bounds)).map((o) => ({
     type: 'node', id: o.id, lon: o.x, lat: o.y, name: o.n,
-    meta: { type: o.t, icon: ICONS[o.k] || '🌉' },
+    meta: { type: o.t, icon: ICONS[o.k] || '🌉', k: o.k },
   }));
 }
 
@@ -97,16 +97,31 @@ export function locateObjects(route, elements) {
       }
     }
   }
-  // слить дубли одного объекта (<30 м) и близкие одноимённые
+  return cluster(found).map((o) => ({ ...o, lonlat: pointAt(route, o.d) }));
+}
+
+const BRIDGE = new Set(['bridge', 'footbridge', 'rail']);
+const group = (k) => (BRIDGE.has(k) ? 'bridge' : k);
+
+// один мост = несколько линий OSM (полосы, тротуары, перила): склеиваем близкие объекты одной группы
+function cluster(found) {
   found.sort((a, b) => a.d - b.d);
   const out = [];
   for (const f of found) {
-    const prev = out.find((o) => o.id === f.id && Math.abs(o.d - f.d) < 30);
-    if (!prev) out.push(f);
+    const g = group(f.k);
+    const gap = g === 'bridge' ? 80 : 40;
+    const prev = out.findLast((o) => o.group === g && f.d - o.dEnd < gap);
+    if (!prev) { out.push({ ...f, group: g, dEnd: f.d, ks: new Set([f.k]), names: new Set(f.name ? [f.name] : []) }); continue; }
+    prev.dEnd = f.d; prev.ks.add(f.k); if (f.name) prev.names.add(f.name);
   }
   return out.map((o) => {
-    const p = pointAt(route, o.d);
-    return { ...o, lonlat: p };
+    let type = o.type, icon = o.icon;
+    if (o.group === 'bridge') {
+      icon = '🌉';
+      type = o.ks.has('rail') ? 'Ж/д мост' : o.ks.has('bridge') ? 'Мост (дорога)' : o.ks.size && [...o.ks].every((k) => k === 'footbridge') ? 'Мостик (пешеходный)' : 'Мост';
+    }
+    const name = [...o.names].join(', ');
+    return { id: o.id, type, icon, name: name.length > 40 ? name.slice(0, 38) + '…' : name, d: (o.d + o.dEnd) / 2 };
   });
 }
 

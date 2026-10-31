@@ -15,3 +15,8 @@ td, th { padding: 3px 4px; border-bottom: 1px solid #eee; text-align: left; }
 .wp { background: #6a1b9a; color: #fff; border: 2px solid #fff; border-radius: 50%; width: 24px; height: 24px; text-align: center; line-height: 20px; font-weight: 700; }
 .wp span { position: absolute; left: 28px; top: -4px; white-space: nowrap; background: #fffd; color: #222; font-size: 11px; font-weight: 500; line-height: 1.3; padding: 1px 4px; border-radius: 4px; text-align: left; }
 @media (max-width: 700px) { body { flex-direction: column; } #panel { width: auto; height: 42%; } }
+#me { display: none; position: fixed; top: 44px; left: 8px; z-index: 5; max-width: calc(100% - 70px); background: #fff; padding: 6px 10px; border-radius: 8px; font-size: 14px; box-shadow: 0 1px 6px #0005; border-left: 4px solid #1976d2; pointer-events: none; }
+.me { width: 18px; height: 18px; border-radius: 50%; background: #1976d2; border: 3px solid #fff; box-shadow: 0 0 0 4px #1976d255; }
+#where.on { background: #1976d2; color: #fff; border-color: #1976d2; }
+#saved { flex: 1; padding: 6px; margin: 6px 6px 0 0; }
+.row { margin-top: 6px; }

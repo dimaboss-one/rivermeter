@@ -8,6 +8,7 @@
 </head>
 <body>
   <div id="map"></div>
+  <div id="me"></div>
   <aside id="panel">
     <input id="name" placeholder="Название маршрута" value="Маршрут">
     <div class="row">
@@ -15,6 +16,12 @@
       <button id="clear">Сбросить</button>
       <button id="pdf" class="primary">PDF A4</button>
     </div>
+    <div class="row">
+      <button id="where">📍 Где я</button>
+      <button id="save">💾 Сохранить</button>
+      <button id="gpx">GPX</button>
+    </div>
+    <div class="row"><select id="saved"></select><button id="del">🗑</button></div>
     <div id="status">Приблизьтесь к реке (масштаб 11+) и ставьте точки кликом.</div>
     <div id="total"></div>
     <h3>Точки</h3>

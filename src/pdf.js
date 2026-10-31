@@ -16,21 +16,30 @@ export const baseStyle = {
   layers: [{ id: 'osm', type: 'raster', source: 'osm' }],
 };
 
-async function renderMap(route, w, h) {
-  const el = document.createElement('div');
-  el.style.cssText = `position:fixed;left:-99999px;top:0;width:${w}px;height:${h}px`;
-  document.body.append(el);
-  const map = new maplibregl.Map({
-    container: el, style: baseStyle, interactive: false, attributionControl: false,
-    canvasContextAttributes: { preserveDrawingBuffer: true }, pixelRatio: 1,
-  });
-  await new Promise((r) => map.on('load', r));
-  map.addSource('r', { type: 'geojson', data: { type: 'Feature', geometry: { type: 'LineString', coordinates: route.coords } } });
-  map.addLayer({ id: 'r', type: 'line', source: 'r', paint: { 'line-color': '#8e24aa', 'line-width': 5 }, layout: { 'line-join': 'round' } });
+const waitIdle = (map, ms) => new Promise((res) => {
+  const t = setTimeout(res, ms);
+  map.once('idle', () => { clearTimeout(t); res(); });
+  map.triggerRepaint();
+});
+
+// снимок основной карты: вписываем маршрут, ждём тайлы, возвращаем вид обратно
+async function snapshot(map, route, objects, points) {
+  const view = { center: map.getCenter(), zoom: map.getZoom() };
   const xs = route.coords.map((c) => c[0]), ys = route.coords.map((c) => c[1]);
-  map.fitBounds([[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)]], { padding: 60, animate: false, maxZoom: 16 });
-  await new Promise((r) => { const f = () => map.loaded() && map.areTilesLoaded() ? r() : map.once('idle', f); setTimeout(f, 300); });
-  return { map, el };
+  map.setLayoutProperty('rivers', 'visibility', 'none');
+  map.fitBounds([[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)]], { padding: 50, animate: false, maxZoom: 16 });
+  await waitIdle(map, 10000);
+  const src = map.getCanvas();
+  const k = src.width / src.clientWidth;
+  const cv = document.createElement('canvas'); cv.width = src.width; cv.height = src.height;
+  const ctx = cv.getContext('2d');
+  ctx.drawImage(src, 0, 0);
+  objects.forEach((o, i) => { const p = map.project(o.lonlat); marker(ctx, [p.x * k, p.y * k], 'о' + (i + 1), '#e65100', 11 * k); });
+  points.forEach((pt, i) => { const p = map.project(pt.lonlat); marker(ctx, [p.x * k, p.y * k], String(i + 1), '#6a1b9a', 13 * k); });
+  const img = cv.toDataURL('image/jpeg', 0.88);
+  map.setLayoutProperty('rivers', 'visibility', 'visible');
+  map.jumpTo(view);
+  return { img, w: cv.width, h: cv.height };
 }
 
 function marker(ctx, [x, y], text, fill, r = 14) {
@@ -40,17 +49,10 @@ function marker(ctx, [x, y], text, fill, r = 14) {
   ctx.fillText(text, x, y + 1);
 }
 
-export async function exportPdf({ name, points, route, objects }) {
-  const W = 1140, H = 840;
-  const { map, el } = await renderMap(route, W, H);
-  const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
-  const ctx = cv.getContext('2d');
-  ctx.drawImage(map.getCanvas(), 0, 0);
-  objects.forEach((o, i) => { const p = map.project(o.lonlat); marker(ctx, [p.x, p.y], 'о' + (i + 1), '#e65100', 12); });
-  points.forEach((pt, i) => { const p = map.project(pt.lonlat); marker(ctx, [p.x, p.y], String(i + 1), '#6a1b9a'); });
-  const img = cv.toDataURL('image/jpeg', 0.9);
-  map.remove(); el.remove();
-
+export async function exportPdf({ map, name, points, route, objects, step = () => {} }) {
+  step('Снимаю карту…');
+  const { img, w, h } = await snapshot(map, route, objects, points);
+  step('Загружаю шрифт…');
   const font = await (await fetch(import.meta.env.BASE_URL + 'DejaVuSans.ttf')).arrayBuffer();
   const b64 = btoa(binary(font));
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
@@ -61,10 +63,11 @@ export async function exportPdf({ name, points, route, objects }) {
   doc.setFontSize(15); doc.text(name || 'Маршрут', 10, 14);
   doc.setFontSize(9);
   doc.text(`Длина: ${fmtKm(route.cum.at(-1))}   Точек: ${points.length}   Объектов: ${objects.length}   ${new Date().toLocaleDateString('ru-RU')}`, 10, 20);
-  doc.addImage(img, 'JPEG', 10, 24, 190, 190 * H / W);
-  doc.setFontSize(7); doc.text('Карта: © OpenStreetMap. Длина по оси реки из OSM, точность ±2–5%.', 10, 24 + 190 * H / W + 4);
+  const mw = Math.min(190, (175 * w) / h), mh = (mw * h) / w;
+  doc.addImage(img, 'JPEG', 10, 24, mw, mh);
+  doc.setFontSize(7); doc.text('Карта: © OpenStreetMap. Длина по оси реки из OSM, точность ±2–5%.', 10, 24 + mh + 4);
 
-  let y = 24 + 190 * H / W + 12;
+  let y = 24 + mh + 12;
   const table = (title, head, rows, widths) => {
     const line = (cells, bold) => {
       if (y > 280) { doc.addPage(); y = 15; }
@@ -85,6 +88,7 @@ export async function exportPdf({ name, points, route, objects }) {
     points.map((p, i) => [i + 1, fmtKm(p.fromStart), i ? fmtKm(p.fromPrev) : '—']), [15, 45, 60]);
   table('Реестр объектов на пути', ['№', 'Объект', 'От старта', 'От прошлой точки', 'Название'],
     objects.map((o, i) => ['о' + (i + 1), o.type, fmtKm(o.d), fmtKm(o.fromPrev), o.name]), [14, 50, 30, 38, 58]);
+  step('Сохраняю файл…');
   doc.save((name || 'marshrut') + '.pdf');
 }
 

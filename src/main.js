@@ -2,7 +2,7 @@ import * as maplibregl from 'maplibre-gl';
 import { RiverGraph } from './graph.js';
 import { loadRivers, loadObstacles, locateObjects } from './overpass.js';
 import { baseStyle, exportPdf } from './pdf.js';
-import { fmtKm, haversine } from './geo.js';
+import { fmtKm, haversine, projectOnSegment } from './geo.js';
 
 const $ = (id) => document.getElementById(id);
 const graph = new RiverGraph();
@@ -13,7 +13,7 @@ let route = null;  // {coords, cum}
 let objects = [];
 let seq = 0;
 
-const map = new maplibregl.Map({ container: 'map', style: baseStyle, center: [27.56, 53.9], zoom: 11 });
+const map = new maplibregl.Map({ container: 'map', style: baseStyle, center: [27.56, 53.9], zoom: 11, canvasContextAttributes: { preserveDrawingBuffer: true } });
 map.addControl(new maplibregl.NavigationControl());
 map.addControl(new maplibregl.GeolocateControl({ trackUserLocation: true }));
 
@@ -130,7 +130,7 @@ function refresh() {
     pointDist.push(acc);
   });
   route = coords.length > 1 ? { coords, cum } : null;
-  map.getSource('route').setData(route ? { type: 'Feature', geometry: { type: 'LineString', coordinates: coords } } : empty);
+  map.getSource('route').setData(route ? { type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: coords } } : empty);
 
   wps.forEach((w, i) => {
     w.fromStart = pointDist[i] ?? 0;
@@ -181,14 +181,15 @@ $('undo').onclick = () => {
   const w = wps.pop(); if (!w) return;
   w.marker.remove(); legs.pop(); refresh();
 };
-$('clear').onclick = () => {
+function clearAll() {
   wps.forEach((w) => w.marker.remove()); wps = []; legs = []; refresh();
-};
+}
+$('clear').onclick = clearAll;
 $('pdf').onclick = async () => {
   if (!route) return status('Поставьте минимум две точки.');
   status('Готовлю PDF…');
   try {
-    await exportPdf({ name: $('name').value, points: wps.map((w) => ({ lonlat: w.lonlat, fromStart: w.fromStart, fromPrev: w.fromPrev })), route, objects });
+    await exportPdf({ map, step: status, name: $('name').value, points: wps.map((w) => ({ lonlat: w.lonlat, fromStart: w.fromStart, fromPrev: w.fromPrev })), route, objects });
     status('PDF сохранён.');
   } catch (e) { status('Ошибка PDF: ' + e.message); console.error(e); }
 };
@@ -198,16 +199,96 @@ function save() {
   localStorage.setItem('rm-route', JSON.stringify({ name: $('name').value, pts: wps.map((w) => w.lonlat), objects }));
 }
 $('name').oninput = save;
+async function loadPoints(pts) {
+  clearAll();
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+  map.fitBounds([[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)]], { padding: 60, animate: false, maxZoom: 15 });
+  await ensureRivers([Math.min(...xs) - 0.03, Math.min(...ys) - 0.03, Math.max(...xs) + 0.03, Math.max(...ys) + 0.03]);
+  for (const p of pts) await addPoint(p);
+}
+
 async function restore() {
   try {
     const s = JSON.parse(localStorage.getItem('rm-route') || 'null');
     if (!s?.pts?.length) return;
     $('name').value = s.name;
-    map.jumpTo({ center: s.pts[0], zoom: 13 });
-    const xs = s.pts.map((p) => p[0]), ys = s.pts.map((p) => p[1]);
-    await ensureRivers([Math.min(...xs) - 0.03, Math.min(...ys) - 0.03, Math.max(...xs) + 0.03, Math.max(...ys) + 0.03]);
-    for (const p of s.pts) await addPoint(p);
+    await loadPoints(s.pts);
   } catch (e) { console.warn(e); }
+}
+
+// ---- сохранённые маршруты
+const store = () => JSON.parse(localStorage.getItem('rm-routes') || '{}');
+function fillSaved() {
+  $('saved').innerHTML = '<option value="">— сохранённые маршруты —</option>' +
+    Object.keys(store()).map((n) => `<option>${n.replace(/</g, '&lt;')}</option>`).join('');
+}
+fillSaved();
+$('save').onclick = () => {
+  if (!wps.length) return status('Сначала поставьте точки.');
+  const all = store();
+  all[$('name').value || 'Маршрут'] = { pts: wps.map((w) => w.lonlat), savedAt: Date.now() };
+  localStorage.setItem('rm-routes', JSON.stringify(all));
+  fillSaved(); $('saved').value = $('name').value;
+  status('Маршрут сохранён на этом телефоне.');
+};
+$('saved').onchange = async () => {
+  const n = $('saved').value, r = store()[n];
+  if (!r) return;
+  $('name').value = n;
+  await loadPoints(r.pts);
+};
+$('del').onclick = () => {
+  const n = $('saved').value; if (!n) return;
+  const all = store(); delete all[n];
+  localStorage.setItem('rm-routes', JSON.stringify(all)); fillSaved(); status('Удалён.');
+};
+$('gpx').onclick = () => {
+  if (!route) return status('Поставьте минимум две точки.');
+  const esc = (t) => String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const wpt = (p, n) => `<wpt lat="${p[1]}" lon="${p[0]}"><name>${esc(n)}</name></wpt>`;
+  const xml = `<?xml version="1.0" encoding="UTF-8"?><gpx version="1.1" creator="rivermeter" xmlns="http://www.topografix.com/GPX/1/1">` +
+    wps.map((w, i) => wpt(w.lonlat, `Точка ${i + 1} (${fmtKm(w.fromStart)})`)).join('') +
+    objects.map((o) => wpt(o.lonlat, `${o.type} ${o.name} (${fmtKm(o.d)})`)).join('') +
+    `<trk><name>${esc($('name').value)}</name><trkseg>${route.coords.map((c) => `<trkpt lat="${c[1]}" lon="${c[0]}"/>`).join('')}</trkseg></trk></gpx>`;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([xml], { type: 'application/gpx+xml' }));
+  a.download = ($('name').value || 'marshrut') + '.gpx'; a.click();
+};
+
+// ---- «Где я»: положение по GPS относительно плана
+let watchId = null, me = null;
+$('where').onclick = () => {
+  if (watchId !== null) {
+    navigator.geolocation.clearWatch(watchId); watchId = null; me?.remove(); me = null;
+    $('me').style.display = 'none'; $('where').classList.remove('on'); return;
+  }
+  if (!navigator.geolocation) return status('GPS недоступен в этом браузере.');
+  $('where').classList.add('on');
+  let first = true;
+  watchId = navigator.geolocation.watchPosition((pos) => {
+    const p = [pos.coords.longitude, pos.coords.latitude];
+    if (!me) { const el = document.createElement('div'); el.className = 'me'; me = new maplibregl.Marker({ element: el }).setLngLat(p).addTo(map); }
+    me.setLngLat(p);
+    if (first) { first = false; map.easeTo({ center: p, zoom: Math.max(map.getZoom(), 14) }); }
+    showWhere(p, pos.coords.accuracy);
+  }, (e) => status('GPS: ' + e.message), { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 });
+};
+
+function showWhere(p, acc) {
+  const box = $('me');
+  box.style.display = 'block';
+  if (!route) { box.textContent = `Вы здесь (±${Math.round(acc)} м). Маршрут не построен.`; return; }
+  let best = null;
+  for (let i = 1; i < route.coords.length; i++) {
+    const r = projectOnSegment(p, route.coords[i - 1], route.coords[i]);
+    if (!best || r.dist < best.dist) best = { ...r, d: route.cum[i - 1] + r.t * (route.cum[i] - route.cum[i - 1]) };
+  }
+  const total = route.cum.at(-1);
+  const next = objects.find((o) => o.d > best.d + 5);
+  box.innerHTML = best.dist > 300
+    ? `Вы в ${fmtKm(best.dist)} от маршрута (±${Math.round(acc)} м)`
+    : `<b>Пройдено ${fmtKm(best.d)}</b> · осталось ${fmtKm(total - best.d)}<br>от русла ${Math.round(best.dist)} м (±${Math.round(acc)} м)` +
+      (next ? `<br>Дальше: ${next.icon} ${next.type} через ${fmtKm(next.d - best.d)}` : '');
 }
 
 window.addEventListener('error', (e) => status('Ошибка: ' + e.message));
