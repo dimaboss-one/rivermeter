@@ -26,15 +26,16 @@ export async function loadRivers(bounds) {
   return (await tilesFor('rivers', bounds)).map((r) => ({ id: r.id, name: r.n, ru: r.ru, coords: r.c }));
 }
 
-const ICONS = { power: '⚡', dam: '🚧', weir: '🚧', lock: '🚧', waterfall: '🌊', rapids: '🌊', ford: '〰', tributary: '↘️', camp: '⛺' };
+const ICONS = { power: '⚡', dam: '🚧', weir: '🚧', lock: '🚧', waterfall: '🌊', rapids: '🌊', ford: '〰', tributary: '↘️', camp: '⛺', village: '🏘' };
 
 export async function loadObstacles(bounds) {
   return (await tilesFor('objs', bounds)).map((o) => {
     let name = o.n || '';
     if (o.k === 'tributary') name = o.ru || toRu(o.n);
+    if (o.k === 'village') name = [o.ru || toRu(o.n), `${o.m} м от русла`].join(' · ');
     if (o.k === 'camp') name = [o.n, `${o.m} м от русла`].filter(Boolean).join(' · ');
     return {
-      type: 'node', id: o.id, lon: o.x, lat: o.y, name, tol: o.k === 'camp' ? 260 : 40,
+      type: 'node', id: o.id, lon: o.x, lat: o.y, name, tol: o.k === 'village' ? 1000 : o.k === 'camp' ? 260 : 40,
       meta: { type: o.t, icon: ICONS[o.k] || '🌉', k: o.k },
     };
   });
@@ -81,9 +82,9 @@ export function locateObjects(route, elements) {
     if (el.type === 'node') {
       const p = [el.lon, el.lat];
       let best = null;
-      const cx = Math.floor(p[0] / CELL), cy = Math.floor(p[1] / CELL);
+      const cx = Math.floor(p[0] / CELL), cy = Math.floor(p[1] / CELL), R = Math.ceil((el.tol ?? 40) / 250);
       const cand = [];
-      for (let x = cx - 1; x <= cx + 1; x++) for (let y = cy - 1; y <= cy + 1; y++) cand.push(...(grid.get(x + ':' + y) || []));
+      for (let x = cx - R; x <= cx + R; x++) for (let y = cy - R; y <= cy + R; y++) cand.push(...(grid.get(x + ':' + y) || []));
       for (const i of cand) {
         const r = projectOnSegment(p, coords[i - 1], coords[i]);
         if (r.dist < (el.tol ?? 40) && (!best || r.dist < best.dist))
@@ -118,7 +119,7 @@ function cluster(found) {
   const out = [];
   for (const f of found) {
     const g = group(f.k);
-    const gap = g === 'bridge' ? 80 : 40;
+    const gap = g === 'bridge' ? 80 : g === 'village' ? 0 : 40;
     const prev = out.findLast((o) => o.group === g && f.d - o.dEnd < gap);
     if (!prev) { out.push({ ...f, group: g, dEnd: f.d, ks: new Set([f.k]), names: new Set(f.name ? [f.name] : []) }); continue; }
     prev.dEnd = f.d; prev.ks.add(f.k); if (f.name) prev.names.add(f.name);

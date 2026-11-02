@@ -19,6 +19,7 @@ function scan(onItems) {
 }
 
 const isCamp = (t) => t.tourism === 'camp_site' || t.tourism === 'camp_pitch' || t.leisure === 'firepit' || t.tourism === 'picnic_site';
+const placeLabel = (t) => t.landuse === 'allotments' || t.place === 'allotments' ? 'Дачи / садовое товарищество' : { city: 'Город', town: 'Город / посёлок', village: 'Деревня', hamlet: 'Хутор / деревушка' }[t.place] || 'Населённый пункт';
 const campLabel = (t) => t.tourism === 'camp_site' ? 'Кемпинг / стоянка' : t.tourism === 'camp_pitch' ? 'Место под палатку' : t.leisure === 'firepit' ? 'Кострище' : 'Место отдыха (пикник)';
 
 function classify(t) {
@@ -38,7 +39,7 @@ function classify(t) {
 }
 
 (async () => {
-  const rivers = [], obst = [], obstNodes = [], campPts = [], campWays = [];
+  const rivers = [], obst = [], obstNodes = [], campPts = [], campWays = [], placeNodes = [], placeWays = [];
   const need = new Set();
   console.log('проход 1: линии');
   await scan((items) => {
@@ -47,10 +48,12 @@ function classify(t) {
         const t = it.tags;
         if (t && (WW_OBST.has(t.waterway) || t.ford === 'yes')) obstNodes.push({ id: it.id, lon: it.lon, lat: it.lat, tags: t });
         if (t && isCamp(t)) campPts.push({ id: it.id, lon: it.lon, lat: it.lat, tags: t });
+        if (t && t.name && ['city', 'town', 'village', 'hamlet'].includes(t.place)) placeNodes.push({ id: it.id, lon: it.lon, lat: it.lat, tags: t });
         continue;
       }
       if (it.type !== 'way' || !it.tags) continue;
       const t = it.tags;
+      if (t.name && (t.landuse === 'allotments' || t.place === 'allotments' || t.place === 'village' || t.place === 'hamlet') && !t.waterway) { it.refs.forEach((r) => need.add(r)); placeWays.push({ id: it.id, tags: t, refs: it.refs }); continue; }
       if (isCamp(t) && !t.waterway) { it.refs.forEach((r) => need.add(r)); campWays.push({ id: it.id, tags: t, refs: it.refs }); continue; }
       let kind = null;
       if (['river', 'stream', 'canal'].includes(t.waterway) && !t.tunnel) kind = 'river';
@@ -209,6 +212,27 @@ function classify(t) {
     campN++; count++;
   }
   console.log('стоянок', campN);
+
+  // ---- населённые пункты и дачи в пределах 1 км от русла; точка — ближайшая к реке
+  const near = (px, py, R) => {
+    let best = Infinity;
+    const cx = Math.floor(px / CELL), cy = Math.floor(py / CELL);
+    for (let x = cx - R; x <= cx + R; x++) for (let y = cy - R; y <= cy + R; y++)
+      for (const [a, b] of grid.get(x + ':' + y) || []) best = Math.min(best, segDist(px, py, a, b));
+    return best;
+  };
+  let vill = 0;
+  const addPlace = (id, tags, lon, lat, m) => {
+    add(objTiles, key(lon, lat), { id, k: 'village', t: placeLabel(tags), n: tags.name, ru: tags['name:ru'], m: Math.round(m), x: +lon.toFixed(5), y: +lat.toFixed(5) });
+    vill++; count++;
+  };
+  for (const n of placeNodes) { const m = near(n.lon, n.lat, 8); if (m <= 1000) addPlace(n.id, n.tags, n.lon, n.lat, m); }
+  for (const w of placeWays) {
+    let best = null;
+    for (const p of geom(w)) { const m = near(p[0], p[1], 8); if (m <= 1000 && (!best || m < best.m)) best = { m, p }; }
+    if (best) addPlace(w.id, w.tags, best.p[0], best.p[1], best.m);
+  }
+  console.log('населённых пунктов', vill);
 
   // ---- реестр рек для поиска: исток / середина / устье
   const hav = (a, b) => {

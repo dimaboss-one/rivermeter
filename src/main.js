@@ -60,7 +60,9 @@ map.on('moveend', loadView);
 map.on('click', async (e) => {
   const p = [e.lngLat.lng, e.lngLat.lat];
   if (map.getZoom() < 11) return status('Приблизьтесь к реке (масштаб 11+).');
-  await addPoint(p);
+  const ins = insertMode;
+  if (ins) setInsert(false);
+  await addPoint(p, ins);
 });
 
 // радиус притягивания: 40 px экрана в метрах
@@ -69,7 +71,9 @@ function snapRadius() {
   return Math.max(30, 40 * mpp);
 }
 
-async function addPoint(p) {
+let insertMode = false;
+
+async function addPoint(p, insert = false) {
   let s = graph.snap(p, snapRadius());
   if (!s) {
     try { await ensureRivers([p[0] - 0.012, p[1] - 0.008, p[0] + 0.012, p[1] + 0.008]); }
@@ -77,6 +81,21 @@ async function addPoint(p) {
     s = graph.snap(p, snapRadius());
   }
   if (!s) return status('Рядом с кликом нет реки в загруженных данных. Кликните ближе к синей линии реки.');
+  if (insert && wps.length >= 2) {
+    // вставка внутрь маршрута: ищем отрезок между точками, ближайший к клику
+    let bi = 0, bd = Infinity;
+    legs.forEach((leg, i) => {
+      for (let k = 1; k < leg.coords.length; k++) {
+        const d = projectOnSegment(s.point, leg.coords[k - 1], leg.coords[k]).dist;
+        if (d < bd) { bd = d; bi = i; }
+      }
+    });
+    const nw = { id: s.id, lonlat: s.point, river: wps[0].river, marker: makeMarker(s.point) };
+    wps.splice(bi + 1, 0, nw);
+    if (!rebuildLegs()) { wps.splice(bi + 1, 1); nw.marker.remove(); rebuildLegs(); return status('Нельзя вставить: нет пути по реке через эту точку.'); }
+    refresh();
+    return;
+  }
   const prev = wps.at(-1);
   if (prev) {
     const leg = graph.path(prev.id, s.id);
@@ -92,6 +111,19 @@ function makeMarker(lonlat) {
   el.className = 'wp';
   el.addEventListener('click', (e) => e.stopPropagation());
   const m = new maplibregl.Marker({ element: el, draggable: true }).setLngLat(lonlat).addTo(map);
+  const pop = new maplibregl.Popup({ offset: 16 });
+  pop.on('open', () => {
+    const i = wps.findIndex((w) => w.marker === m);
+    if (i < 0) return;
+    const box = document.createElement('div');
+    box.innerHTML = `<b>Точка ${i + 1}</b><br>${fmtKm(wps[i].fromStart || 0)} от старта${i ? `<br>+${fmtKm(wps[i].fromPrev)} от прошлой` : ''}<br>`;
+    const b = document.createElement('button');
+    b.textContent = '🗑 Удалить точку';
+    b.onclick = () => { pop.remove(); removeWp(m); };
+    box.append(b);
+    pop.setDOMContent(box);
+  });
+  m.setPopup(pop);
   m.on('dragend', () => {
     const i = wps.findIndex((w) => w.marker === m);
     const ll = m.getLngLat();
@@ -104,6 +136,22 @@ function makeMarker(lonlat) {
     refresh();
   });
   return m;
+}
+
+function removeWp(m) {
+  const i = wps.findIndex((w) => w.marker === m);
+  if (i < 0) return;
+  const old = wps.slice();
+  wps.splice(i, 1);
+  if (!rebuildLegs()) { wps = old; rebuildLegs(); return status('Нельзя удалить: без этой точки нет пути по реке.'); }
+  m.remove();
+  refresh();
+}
+
+function setInsert(on) {
+  insertMode = on;
+  $('ins').classList.toggle('on', on);
+  if (on) status('Режим вставки: кликните по реке между точками — там появится новая точка.');
 }
 
 function rebuildLegs() {
@@ -154,7 +202,7 @@ let findSeq = 0;
 async function findObjects() {
   const my = ++findSeq;
   const xs = route.coords.map((c) => c[0]), ys = route.coords.map((c) => c[1]);
-  const pad = 0.002;
+  const pad = 0.012;
   status('Ищу мосты, провода, плотины…');
   try {
     const els = await loadObstacles([Math.min(...xs) - pad, Math.min(...ys) - pad, Math.max(...xs) + pad, Math.max(...ys) + pad]);
@@ -165,6 +213,7 @@ async function findObjects() {
       const before = pd.filter((d) => d <= o.d).at(-1) ?? 0;
       o.fromPrev = o.d - before;
     });
+    objects.forEach((o, i) => { o.fromObj = i ? o.d - objects[i - 1].d : o.d; });
     renderObjects();
     status(`Найдено объектов: ${objects.length}.`);
     save();
@@ -181,14 +230,16 @@ function renderObjects() {
     objects.forEach((o, i) => {
       const el = document.createElement('div');
       el.className = 'ob';
-      el.textContent = 'о' + (i + 1);
-      el.title = `${o.type} ${o.name}`.trim();
+      el.innerHTML = `о${i + 1}<span>${fmtKm(o.d)}<br>+${fmtKm(o.fromPrev)}</span>`;
       el.addEventListener('click', (e) => e.stopPropagation());
-      objMarkers.push(new maplibregl.Marker({ element: el }).setLngLat(o.lonlat).addTo(map));
+      const mk = new maplibregl.Marker({ element: el }).setLngLat(o.lonlat).addTo(map);
+      mk.setPopup(new maplibregl.Popup({ offset: 12 }).setHTML(
+        `<b>о${i + 1} ${o.icon} ${o.type}</b>${o.name ? '<br>' + o.name : ''}<br>${fmtKm(o.d)} от старта<br>+${fmtKm(o.fromPrev)} от прошлой точки<br>+${fmtKm(o.fromObj)} от прошлого объекта`));
+      objMarkers.push(mk);
     });
   }
-  $('objs').innerHTML = (riverName() ? `<tr><td colspan="4"><b>🏞 Река: ${riverName()}</b></tr>` : '') + '<tr><th>№<th>Объект<th>От старта<th>От точки</tr>' +
-    objects.map((o, i) => `<tr><td>о${i + 1}<td>${o.icon} ${o.type}${o.name ? ' «' + o.name + '»' : ''}<td>${fmtKm(o.d)}<td>${fmtKm(o.fromPrev)}`).join('');
+  $('objs').innerHTML = (riverName() ? `<tr><td colspan="5"><b>🏞 Река: ${riverName()}</b></tr>` : '') + '<tr><th>№<th>Объект<th>От старта<th>От точки<th>От объекта</tr>' +
+    objects.map((o, i) => `<tr><td>о${i + 1}<td>${o.icon} ${o.type}${o.name ? ' «' + o.name + '»' : ''}<td>${fmtKm(o.d)}<td>${fmtKm(o.fromPrev)}<td>${fmtKm(o.fromObj)}`).join('');
 }
 $('showObjs').onchange = renderObjects;
 
@@ -229,7 +280,7 @@ $('pdf').onclick = async () => {
   if (!route) return status('Поставьте минимум две точки.');
   status('Готовлю PDF…');
   try {
-    await exportPdf({ map, step: status, name: $('name').value, river: riverName(), points: wps.map((w) => ({ lonlat: w.lonlat, fromStart: w.fromStart, fromPrev: w.fromPrev })), route, objects });
+    await exportPdf({ map, scale: $('pdfScale').value, step: status, name: $('name').value, river: riverName(), points: wps.map((w) => ({ lonlat: w.lonlat, fromStart: w.fromStart, fromPrev: w.fromPrev })), route, objects });
     status('PDF сохранён.');
   } catch (e) { status('Ошибка PDF: ' + e.message); console.error(e); }
 };
@@ -391,3 +442,21 @@ $('q').oninput = async () => {
 };
 
 window.rm = { map, addPoint, graph };
+
+$('ins').onclick = () => {
+  if (wps.length < 2) return status('Для вставки нужны минимум две точки.');
+  setInsert(!insertMode);
+};
+$('keep2').onclick = () => {
+  if (wps.length <= 2) return status('Промежуточных точек нет.');
+  if (!confirm('Удалить все промежуточные точки? Останутся старт, финиш и объекты на пути.')) return;
+  const old = wps.slice();
+  const mid = wps.slice(1, -1);
+  wps = [wps[0], wps.at(-1)];
+  if (!rebuildLegs()) { wps = old; rebuildLegs(); return status('Не удалось: нет пути по реке.'); }
+  mid.forEach((w) => w.marker.remove());
+  refresh();
+};
+const syncZoomClass = () => map.getContainer().classList.toggle('zl', map.getZoom() >= 12.5);
+map.on('zoom', syncZoomClass);
+syncZoomClass();
