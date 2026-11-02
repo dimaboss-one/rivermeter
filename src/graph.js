@@ -37,6 +37,7 @@ export class RiverGraph {
     this.adj = new Map();   // id -> Map(id -> dist)
     this.byKey = new Map();
     this.ways = new Map();  // wayId -> [ids]
+    this.meta = new Map();  // wayId -> {n, ru}
     this.virtual = 0;
   }
   node(p) {
@@ -56,8 +57,9 @@ export class RiverGraph {
     this.adj.get(a).set(b, d);
     this.adj.get(b).set(a, d);
   }
-  addWay(wayId, coords) {
+  addWay(wayId, coords, meta) {
     if (this.ways.has(wayId)) return false;
+    if (meta) this.meta.set(wayId, meta);
     const ids = coords.map((c) => this.node(c));
     for (let i = 1; i < ids.length; i++) this.link(ids[i - 1], ids[i]);
     this.ways.set(wayId, ids);
@@ -66,11 +68,11 @@ export class RiverGraph {
   // ближайшая точка реки; вставляет её в граф как новый узел
   snap(p, maxMeters = 400) {
     let best = null;
-    for (const ids of this.ways.values()) {
+    for (const [wid, ids] of this.ways) {
       for (let i = 1; i < ids.length; i++) {
         const a = this.nodes.get(ids[i - 1]), b = this.nodes.get(ids[i]);
         const r = projectOnSegment(p, a, b);
-        if (!best || r.dist < best.dist) best = { ...r, a: ids[i - 1], b: ids[i] };
+        if (!best || r.dist < best.dist) best = { ...r, a: ids[i - 1], b: ids[i], wid };
       }
     }
     if (!best || best.dist > maxMeters) return null;
@@ -79,7 +81,7 @@ export class RiverGraph {
       this.link(best.a, id);
       this.link(id, best.b);
     }
-    return { id, point: this.nodes.get(id) };
+    return { id, point: this.nodes.get(id), meta: this.meta.get(best.wid) };
   }
   // Дейкстра; возвращает {coords, length} или null
   path(from, to) {

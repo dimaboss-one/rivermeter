@@ -18,6 +18,9 @@ function scan(onItems) {
   });
 }
 
+const isCamp = (t) => t.tourism === 'camp_site' || t.tourism === 'camp_pitch' || t.leisure === 'firepit' || t.tourism === 'picnic_site';
+const campLabel = (t) => t.tourism === 'camp_site' ? 'Кемпинг / стоянка' : t.tourism === 'camp_pitch' ? 'Место под палатку' : t.leisure === 'firepit' ? 'Кострище' : 'Место отдыха (пикник)';
+
 function classify(t) {
   if (t.power) return ['power', 'Провода (ЛЭП)'];
   if (t.waterway === 'dam') return ['dam', 'Плотина'];
@@ -35,7 +38,7 @@ function classify(t) {
 }
 
 (async () => {
-  const rivers = [], obst = [], obstNodes = [];
+  const rivers = [], obst = [], obstNodes = [], campPts = [], campWays = [];
   const need = new Set();
   console.log('проход 1: линии');
   await scan((items) => {
@@ -43,10 +46,12 @@ function classify(t) {
       if (it.type === 'node') {
         const t = it.tags;
         if (t && (WW_OBST.has(t.waterway) || t.ford === 'yes')) obstNodes.push({ id: it.id, lon: it.lon, lat: it.lat, tags: t });
+        if (t && isCamp(t)) campPts.push({ id: it.id, lon: it.lon, lat: it.lat, tags: t });
         continue;
       }
       if (it.type !== 'way' || !it.tags) continue;
       const t = it.tags;
+      if (isCamp(t) && !t.waterway) { it.refs.forEach((r) => need.add(r)); campWays.push({ id: it.id, tags: t, refs: it.refs }); continue; }
       let kind = null;
       if (['river', 'stream', 'canal'].includes(t.waterway) && !t.tunnel) kind = 'river';
       else if (WW_OBST.has(t.waterway) || t.ford === 'yes' || t.man_made === 'bridge' ||
@@ -77,7 +82,7 @@ function classify(t) {
     const xs = g.map((p) => p[0]), ys = g.map((p) => p[1]);
     const x0 = Math.floor(Math.min(...xs) / T), x1 = Math.floor(Math.max(...xs) / T);
     const y0 = Math.floor(Math.min(...ys) / T), y1 = Math.floor(Math.max(...ys) / T);
-    const rec = { id: w.id, n: w.tags.name || undefined, c: g.map((p) => [+p[0].toFixed(5), +p[1].toFixed(5)]) };
+    const rec = { id: w.id, n: w.tags.name || undefined, ru: w.tags['name:ru'] || undefined, be: w.tags['name:be'] || undefined, c: g.map((p) => [+p[0].toFixed(5), +p[1].toFixed(5)]) };
     for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) add(riverTiles, x + '_' + y, rec);
   }
 
@@ -145,6 +150,112 @@ function classify(t) {
     count++;
   }
 
+
+  // ---- притоки: именованная река W заканчивается в узле, через который проходит другая река
+  const nm = (w) => w.tags['name:ru'] || w.tags.name;
+  const named = rivers.filter((w) => nm(w));
+  const ends = new Map();
+  named.forEach((w, i) => { const e = w.refs.at(-1); if (!ends.has(e)) ends.set(e, []); ends.get(e).push(i); });
+  const through = new Map();
+  named.forEach((w, i) => w.refs.forEach((r, pos) => {
+    if (!ends.has(r)) return;
+    if (!through.has(r)) through.set(r, []);
+    through.get(r).push({ i, pos: pos === 0 ? 'start' : pos === w.refs.length - 1 ? 'end' : 'mid' });
+  }));
+  let trib = 0;
+  for (const [node, wayIdxs] of ends) {
+    const p = xy.get(node);
+    if (!p) continue;
+    const others = through.get(node) || [];
+    for (const wi of wayIdxs) {
+      const W = named[wi];
+      const byName = new Map();
+      for (const o of others) {
+        if (o.i === wi || nm(named[o.i]) === nm(W)) continue;
+        const arr = byName.get(nm(named[o.i])) || [];
+        arr.push(o.pos); byName.set(nm(named[o.i]), arr);
+      }
+      for (const [into, poss] of byName) {
+        if (!(poss.includes('mid') || (poss.includes('start') && poss.includes('end')))) continue;
+        add(objTiles, key(p[0], p[1]), { id: W.id, k: 'tributary', t: 'Впадает приток', n: W.tags.name, ru: W.tags['name:ru'], into, x: +p[0].toFixed(5), y: +p[1].toFixed(5) });
+        trib++; count++;
+        break;
+      }
+    }
+  }
+  console.log('притоков', trib);
+
+  // ---- места для стоянок рядом с рекой (до 250 м)
+  const segDist = (px, py, a, b) => {
+    const dx = (b[0] - a[0]) * kx, dy = b[1] - a[1], l2 = dx * dx + dy * dy || 1e-12;
+    let t = (((px - a[0]) * kx) * dx + (py - a[1]) * dy) / l2;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot((px - a[0]) * kx - dx * t, py - a[1] - dy * t) * 111320;
+  };
+  const camps = campPts.map((c) => ({ ...c }));
+  for (const w of campWays) {
+    const g = geom(w);
+    if (!g.length) continue;
+    camps.push({ id: w.id, lon: g.reduce((a, p) => a + p[0], 0) / g.length, lat: g.reduce((a, p) => a + p[1], 0) / g.length, tags: w.tags });
+  }
+  let campN = 0;
+  for (const c of camps) {
+    let best = Infinity;
+    const cx = Math.floor(c.lon / CELL), cy = Math.floor(c.lat / CELL);
+    for (let x = cx - 2; x <= cx + 2; x++) for (let y = cy - 2; y <= cy + 2; y++)
+      for (const [a, b] of grid.get(x + ':' + y) || []) best = Math.min(best, segDist(c.lon, c.lat, a, b));
+    if (best > 250) continue;
+    add(objTiles, key(c.lon, c.lat), { id: c.id, k: 'camp', t: campLabel(c.tags), n: c.tags.name, m: Math.round(best), x: +c.lon.toFixed(5), y: +c.lat.toFixed(5) });
+    campN++; count++;
+  }
+  console.log('стоянок', campN);
+
+  // ---- реестр рек для поиска: исток / середина / устье
+  const hav = (a, b) => {
+    const R = 6371008.8, r = (d) => (d * Math.PI) / 180;
+    const s = Math.sin(r(b[1] - a[1]) / 2) ** 2 + Math.cos(r(a[1])) * Math.cos(r(b[1])) * Math.sin(r(b[0] - a[0]) / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(s));
+  };
+  const groups = new Map();
+  named.forEach((w, i) => { const k = nm(w); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(i); });
+  const entities = [];
+  for (const [gname, idxs] of groups) {
+    const parent = new Map(idxs.map((i) => [i, i]));
+    const find = (i) => { while (parent.get(i) !== i) { parent.set(i, parent.get(parent.get(i))); i = parent.get(i); } return i; };
+    const byNode = new Map();
+    for (const i of idxs) for (const r of [named[i].refs[0], named[i].refs.at(-1)]) {
+      if (byNode.has(r)) parent.set(find(i), find(byNode.get(r))); else byNode.set(r, i);
+    }
+    const comps = new Map();
+    for (const i of idxs) { const r = find(i); if (!comps.has(r)) comps.set(r, []); comps.get(r).push(i); }
+    for (const members of comps.values()) {
+      const info = members.map((i) => { const g = geom(named[i]); let l = 0; for (let k = 1; k < g.length; k++) l += hav(g[k - 1], g[k]); return { i, g, l }; }).filter((m) => m.g.length > 1);
+      const total = info.reduce((a, m) => a + m.l, 0);
+      if (total < 1500) continue;
+      const lastSet = new Set(info.map((m) => named[m.i].refs.at(-1)));
+      const starts = info.filter((m) => !lastSet.has(named[m.i].refs[0])).sort((a, b) => b.l - a.l).slice(0, 5);
+      let bestChain = null;
+      for (const st of (starts.length ? starts : [info[0]])) {
+        const chain = [st], seenW = new Set([st.i]);
+        for (;;) {
+          const end = named[chain.at(-1).i].refs.at(-1);
+          const nxt = info.filter((m) => !seenW.has(m.i) && named[m.i].refs[0] === end).sort((a, b) => b.l - a.l)[0];
+          if (!nxt) break;
+          chain.push(nxt); seenW.add(nxt.i);
+        }
+        const len = chain.reduce((a, m) => a + m.l, 0);
+        if (!bestChain || len > bestChain.len) bestChain = { chain, len };
+      }
+      const pts = bestChain.chain.flatMap((m) => m.g);
+      let acc = 0, mid = pts[0];
+      for (let k = 1; k < pts.length; k++) { acc += hav(pts[k - 1], pts[k]); if (acc >= bestChain.len / 2) { mid = pts[k]; break; } }
+      const w0 = named[members[0]].tags;
+      const r5 = (p) => [+p[0].toFixed(5), +p[1].toFixed(5)];
+      entities.push({ r: w0['name:ru'] || undefined, n: w0.name || gname, b: w0['name:be'] || undefined, l: +(total / 1000).toFixed(1), s: r5(pts[0]), m: r5(mid), e: r5(pts.at(-1)) });
+    }
+  }
+  console.log('рек в поиске', entities.length);
+
   fs.rmSync(OUT, { recursive: true, force: true });
   fs.mkdirSync(path.join(OUT, 'rivers'), { recursive: true });
   fs.mkdirSync(path.join(OUT, 'objs'), { recursive: true });
@@ -152,5 +263,6 @@ function classify(t) {
   for (const [k, v] of riverTiles) fs.writeFileSync(path.join(OUT, 'rivers', k + '.json'), JSON.stringify(v));
   for (const [k, v] of objTiles) fs.writeFileSync(path.join(OUT, 'objs', k + '.json'), JSON.stringify(v));
   fs.writeFileSync(path.join(OUT, 'index.json'), JSON.stringify(index));
+  fs.writeFileSync(path.join(OUT, 'names.json'), JSON.stringify(entities));
   console.log('готово: тайлов рек', riverTiles.size, 'объектов', count);
 })();

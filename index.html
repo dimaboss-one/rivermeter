@@ -10,6 +10,8 @@
   <div id="map"></div>
   <div id="me"></div>
   <aside id="panel">
+    <input id="q" placeholder="🔍 Найти реку по названию" autocomplete="off">
+    <div id="found"></div>
     <input id="name" placeholder="Название маршрута" value="Маршрут">
     <div class="row">
       <button id="undo">↶ Убрать точку</button>
@@ -22,6 +24,12 @@
       <button id="gpx">GPX</button>
     </div>
     <div class="row"><select id="saved"></select><button id="del">🗑</button></div>
+    <div class="row">
+      <button id="ya">Я.Карты</button>
+      <button id="yt">YouTube</button>
+      <button id="wm">wmbel.by</button>
+      <button id="lvl">Уровень воды</button>
+    </div>
     <div id="status">Приблизьтесь к реке (масштаб 11+) и ставьте точки кликом.</div>
     <div id="total"></div>
     <h3>Точки</h3>

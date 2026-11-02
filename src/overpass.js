@@ -1,4 +1,5 @@
 import { segIntersect, projectOnSegment, haversine } from './geo.js';
+import { toRu } from './names.js';
 
 const BASE = import.meta.env.BASE_URL + 'data/';
 const cache = new Map();
@@ -22,16 +23,21 @@ async function tilesFor(kind, [w, s, e, n]) {
 }
 
 export async function loadRivers(bounds) {
-  return (await tilesFor('rivers', bounds)).map((r) => ({ id: r.id, name: r.n, coords: r.c }));
+  return (await tilesFor('rivers', bounds)).map((r) => ({ id: r.id, name: r.n, ru: r.ru, coords: r.c }));
 }
 
-const ICONS = { power: '⚡', dam: '🚧', weir: '🚧', lock: '🚧', waterfall: '🌊', rapids: '🌊', ford: '〰' };
+const ICONS = { power: '⚡', dam: '🚧', weir: '🚧', lock: '🚧', waterfall: '🌊', rapids: '🌊', ford: '〰', tributary: '↘️', camp: '⛺' };
 
 export async function loadObstacles(bounds) {
-  return (await tilesFor('objs', bounds)).map((o) => ({
-    type: 'node', id: o.id, lon: o.x, lat: o.y, name: o.n,
-    meta: { type: o.t, icon: ICONS[o.k] || '🌉', k: o.k },
-  }));
+  return (await tilesFor('objs', bounds)).map((o) => {
+    let name = o.n || '';
+    if (o.k === 'tributary') name = o.ru || toRu(o.n);
+    if (o.k === 'camp') name = [o.n, `${o.m} м от русла`].filter(Boolean).join(' · ');
+    return {
+      type: 'node', id: o.id, lon: o.x, lat: o.y, name, tol: o.k === 'camp' ? 260 : 40,
+      meta: { type: o.t, icon: ICONS[o.k] || '🌉', k: o.k },
+    };
+  });
 }
 
 function classify(t = {}) {
@@ -75,9 +81,12 @@ export function locateObjects(route, elements) {
     if (el.type === 'node') {
       const p = [el.lon, el.lat];
       let best = null;
-      for (const i of grid.get(Math.floor(p[0] / CELL) + ':' + Math.floor(p[1] / CELL)) || []) {
+      const cx = Math.floor(p[0] / CELL), cy = Math.floor(p[1] / CELL);
+      const cand = [];
+      for (let x = cx - 1; x <= cx + 1; x++) for (let y = cy - 1; y <= cy + 1; y++) cand.push(...(grid.get(x + ':' + y) || []));
+      for (const i of cand) {
         const r = projectOnSegment(p, coords[i - 1], coords[i]);
-        if (r.dist < 40 && (!best || r.dist < best.dist))
+        if (r.dist < (el.tol ?? 40) && (!best || r.dist < best.dist))
           best = { dist: r.dist, d: cum[i - 1] + r.t * (cum[i] - cum[i - 1]) };
       }
       if (best) found.push({ id: el.id, ...meta, name, d: best.d });
@@ -121,7 +130,7 @@ function cluster(found) {
       type = o.ks.has('rail') ? 'Ж/д мост' : o.ks.has('bridge') ? 'Мост (дорога)' : o.ks.size && [...o.ks].every((k) => k === 'footbridge') ? 'Мостик (пешеходный)' : 'Мост';
     }
     const name = [...o.names].join(', ');
-    return { id: o.id, type, icon, name: name.length > 40 ? name.slice(0, 38) + '…' : name, d: (o.d + o.dEnd) / 2 };
+    return { id: o.id, k: o.group, type, icon, name: name.length > 40 ? name.slice(0, 38) + '…' : name, d: (o.d + o.dEnd) / 2 };
   });
 }
 

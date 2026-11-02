@@ -49,7 +49,7 @@ function marker(ctx, [x, y], text, fill, r = 14) {
   ctx.fillText(text, x, y + 1);
 }
 
-export async function exportPdf({ map, name, points, route, objects, step = () => {} }) {
+export async function exportPdf({ map, river, name, points, route, objects, step = () => {} }) {
   step('Снимаю карту…');
   const { img, w, h } = await snapshot(map, route, objects, points);
   step('Загружаю шрифт…');
@@ -60,7 +60,7 @@ export async function exportPdf({ map, name, points, route, objects, step = () =
   doc.addFont('DejaVuSans.ttf', 'DejaVu', 'normal');
   doc.setFont('DejaVu');
 
-  doc.setFontSize(15); doc.text(name || 'Маршрут', 10, 14);
+  doc.setFontSize(15); doc.text((name || 'Маршрут') + (river ? ' — р. ' + river : ''), 10, 14);
   doc.setFontSize(9);
   doc.text(`Длина: ${fmtKm(route.cum.at(-1))}   Точек: ${points.length}   Объектов: ${objects.length}   ${new Date().toLocaleDateString('ru-RU')}`, 10, 20);
   const mw = Math.min(190, (175 * w) / h), mh = (mw * h) / w;

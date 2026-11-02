@@ -2,6 +2,7 @@ import * as maplibregl from 'maplibre-gl';
 import { RiverGraph } from './graph.js';
 import { loadRivers, loadObstacles, locateObjects } from './overpass.js';
 import { baseStyle, exportPdf } from './pdf.js';
+import { nkey, toRu, riverRu } from './names.js';
 import { fmtKm, haversine, projectOnSegment } from './geo.js';
 
 const $ = (id) => document.getElementById(id);
@@ -43,7 +44,7 @@ async function ensureRivers(b) {
   if (loaded.some((l) => inside(l, b))) return;
   status('Загружаю реки…');
   const ways = await loadRivers(b);
-  ways.forEach((w) => graph.addWay(w.id, w.coords));
+  ways.forEach((w) => graph.addWay(w.id, w.coords, { n: w.name, ru: w.ru }));
   loaded.push(b);
   drawRivers();
   status(`Рек загружено: ${graph.ways.size} участков.`);
@@ -83,7 +84,7 @@ async function addPoint(p) {
     if (!leg) return status('Между точками нет пути по реке (разные водотоки или разрыв в данных).');
     legs.push(leg);
   }
-  wps.push({ id: s.id, lonlat: s.point, marker: makeMarker(s.point) });
+  wps.push({ id: s.id, lonlat: s.point, river: riverRu(s.meta), marker: makeMarker(s.point) });
   refresh();
 }
 
@@ -97,7 +98,7 @@ function makeMarker(lonlat) {
     const s = graph.snap([ll.lng, ll.lat], snapRadius());
     if (!s) { m.setLngLat(wps[i].lonlat); return; }
     const old = wps[i];
-    wps[i] = { ...old, id: s.id, lonlat: s.point };
+    wps[i] = { ...old, id: s.id, lonlat: s.point, river: riverRu(s.meta) };
     if (!rebuildLegs()) { wps[i] = old; rebuildLegs(); m.setLngLat(old.lonlat); status('Нет пути по реке для этой точки.'); return; }
     m.setLngLat(s.point);
     refresh();
@@ -138,6 +139,7 @@ function refresh() {
     const el = w.marker.getElement();
     el.innerHTML = `${i + 1}<span>${fmtKm(w.fromStart)}${i ? `<br>+${fmtKm(w.fromPrev)}` : ''}</span>`;
   });
+  renderObjects();
   $('total').textContent = route ? 'Всего: ' + fmtKm(acc) : '';
   $('pts').innerHTML = '<tr><th>№<th>От старта<th>От прошлой</tr>' +
     wps.map((w, i) => `<tr><td>${i + 1}<td>${fmtKm(w.fromStart)}<td>${i ? fmtKm(w.fromPrev) : '—'}`).join('');
@@ -156,7 +158,7 @@ async function findObjects() {
   try {
     const els = await loadObstacles([Math.min(...xs) - pad, Math.min(...ys) - pad, Math.max(...xs) + pad, Math.max(...ys) + pad]);
     if (my !== findSeq) return;
-    objects = locateObjects(route, els);
+    objects = locateObjects(route, els).filter((o) => !(o.k === 'tributary' && nkey(o.name) === nkey(riverName())));
     const pd = wps.map((w) => w.fromStart);
     objects.forEach((o) => {
       const before = pd.filter((d) => d <= o.d).at(-1) ?? 0;
@@ -168,12 +170,14 @@ async function findObjects() {
   } catch (e) { status('Ошибка поиска объектов: ' + e.message); }
 }
 
+const riverName = () => wps[0]?.river || '';
+
 function renderObjects() {
   map.getSource('objs').setData({
     type: 'FeatureCollection',
     features: objects.map((o) => ({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: o.lonlat } })),
   });
-  $('objs').innerHTML = '<tr><th>№<th>Объект<th>От старта<th>От точки</tr>' +
+  $('objs').innerHTML = (riverName() ? `<tr><td colspan="4"><b>🏞 Река: ${riverName()}</b></tr>` : '') + '<tr><th>№<th>Объект<th>От старта<th>От точки</tr>' +
     objects.map((o, i) => `<tr><td>о${i + 1}<td>${o.icon} ${o.type}${o.name ? ' «' + o.name + '»' : ''}<td>${fmtKm(o.d)}<td>${fmtKm(o.fromPrev)}`).join('');
 }
 
@@ -189,7 +193,7 @@ $('pdf').onclick = async () => {
   if (!route) return status('Поставьте минимум две точки.');
   status('Готовлю PDF…');
   try {
-    await exportPdf({ map, step: status, name: $('name').value, points: wps.map((w) => ({ lonlat: w.lonlat, fromStart: w.fromStart, fromPrev: w.fromPrev })), route, objects });
+    await exportPdf({ map, step: status, name: $('name').value, river: riverName(), points: wps.map((w) => ({ lonlat: w.lonlat, fromStart: w.fromStart, fromPrev: w.fromPrev })), route, objects });
     status('PDF сохранён.');
   } catch (e) { status('Ошибка PDF: ' + e.message); console.error(e); }
 };
@@ -293,3 +297,59 @@ function showWhere(p, acc) {
 
 window.addEventListener('error', (e) => status('Ошибка: ' + e.message));
 window.addEventListener('unhandledrejection', (e) => status('Ошибка: ' + (e.reason?.message || e.reason)));
+
+// ---- кнопки-ссылки
+const open = (url) => window.open(url, '_blank');
+$('yt').onclick = () => {
+  if (!riverName()) return status('Поставьте первую точку на реке.');
+  open('https://www.youtube.com/results?search_query=' + encodeURIComponent('обзор реки ' + riverName()));
+};
+$('ya').onclick = () => {
+  if (wps.length < 2) return status('Нужны минимум две точки.');
+  const a = wps[0].lonlat, b = wps.at(-1).lonlat;
+  open(`https://yandex.ru/maps/?rtext=~${a[1]},${a[0]}~${b[1]},${b[0]}&rtt=auto`);
+};
+let wm = null;
+$('wm').onclick = async () => {
+  const r = riverName();
+  if (!r) return status('Поставьте первую точку на реке.');
+  wm ??= await fetch(import.meta.env.BASE_URL + 'data/wmbel.json').then((x) => x.json()).catch(() => ({}));
+  const slug = Object.entries(wm).find(([n]) => nkey(n) === nkey(r))?.[1];
+  open(slug ? 'https://wmbel.by/index.php/marshruty/' + slug : 'https://wmbel.by/index.php/component/search/?searchword=' + encodeURIComponent(r));
+};
+$('lvl').onclick = () => open('https://allrivers.info/region/belarus');
+
+// ---- поиск реки: исток / середина / устье
+let rivers = null;
+async function loadNames() {
+  if (rivers) return rivers;
+  const list = await fetch(import.meta.env.BASE_URL + 'data/names.json').then((x) => x.json());
+  rivers = list.map((r) => {
+    const ru = r.r || toRu(r.n);
+    return { ...r, ru, keys: [nkey(ru), nkey(r.n), nkey(r.b)].filter(Boolean) };
+  });
+  return rivers;
+}
+$('q').oninput = async () => {
+  const q = nkey($('q').value);
+  const box = $('found');
+  if (q.length < 2) { box.innerHTML = ''; return; }
+  const all = await loadNames();
+  const hit = [];
+  for (const r of all) {
+    const sc = r.keys.some((k) => k.startsWith(q)) ? 0 : r.keys.some((k) => k.includes(q)) ? 1 : 9;
+    if (sc < 9) hit.push([sc, r]);
+  }
+  hit.sort((a, b) => a[0] - b[0] || b[1].l - a[1].l);
+  const top = hit.filter(([, r]) => r.l >= 3 || r.keys.includes(q)).slice(0, 6);
+  box.innerHTML = top.map(([, r], i) => {
+    const alt = r.b && r.b !== r.ru ? ` (${r.b})` : r.n !== r.ru ? ` (${r.n})` : '';
+    return `<div class="res"><b>${r.ru}</b>${alt} · ${r.l} км
+      <div class="row"><button data-i="${i}" data-p="s">Исток</button><button data-i="${i}" data-p="m">Середина</button><button data-i="${i}" data-p="e">Устье</button></div></div>`;
+  }).join('') || '<div class="res">Ничего не найдено</div>';
+  box.onclick = (ev) => {
+    const b = ev.target.closest('button'); if (!b) return;
+    const r = top[+b.dataset.i][1];
+    map.flyTo({ center: r[b.dataset.p], zoom: 14 });
+  };
+};
