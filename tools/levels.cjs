@@ -5,18 +5,22 @@ const BASE = 'https://allrivers.info';
 const UA = 'rivermeter-bot/1.0 (+https://github.com/dimaboss-one/rivermeter)';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+class Blocked extends Error {}
+
+// Сайт ограничивает частоту запросов (429): при повторном отказе прекращаем весь сбор, а не долбим дальше.
 async function get(url) {
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 3; i++) {
     try {
       const r = await fetch(url, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(20000) });
       if (r.ok) return await r.text();
       if (r.status === 429) {
-        const wait = Math.min(120, parseInt(r.headers.get('retry-after') || '0', 10) || 20 * (i + 1));
+        if (i >= 1) throw new Blocked('429 Too Many Requests');
+        const wait = Math.min(90, parseInt(r.headers.get('retry-after') || '0', 10) || 60);
         console.log('429, жду', wait, 'с');
         await sleep(wait * 1000);
         continue;
       }
-    } catch {}
+    } catch (e) { if (e instanceof Blocked) throw e; }
     await sleep(3000 * (i + 1));
   }
   throw new Error('не удалось загрузить ' + url);
@@ -46,8 +50,8 @@ const num = (s) => (s == null ? null : parseFloat(String(s).replace(',', '.')));
         level: lv ? num(lv[1]) : null, delta: lv && lv[2] != null ? num(lv[2]) : null,
         temp: tp ? num(tp[1]) : null, date: dt ? dt[1] : null,
       });
-    } catch (e) { console.log('пропуск', path, e.message); }
-    await sleep(2500);
+    } catch (e) { if (e instanceof Blocked) { console.log('Сайт ограничил запросы — сбор остановлен, прежний файл не меняю.'); process.exit(0); } console.log('пропуск', path, e.message); }
+    await sleep(8000);
   }
   fs.writeFileSync(out, JSON.stringify({ updated: new Date().toISOString(), source: BASE, gauges: list }));
   console.log('записано', list.length, 'с уровнем', list.filter((x) => x.level != null).length);

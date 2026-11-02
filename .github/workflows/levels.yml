@@ -18,6 +18,7 @@ jobs:
         with:
           node-version: 22
       - run: node tools/levels.cjs site/data/levels.json
+        timeout-minutes: 60
       - run: |
           cd site
           git config user.name "levels-bot"
