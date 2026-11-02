@@ -24,3 +24,8 @@ td, th { padding: 3px 4px; border-bottom: 1px solid #eee; text-align: left; }
 .res { padding: 6px 0; border-bottom: 1px solid #eee; font-size: 13px; }
 .res .row { margin-top: 4px; }
 .row { flex-wrap: wrap; }
+.ob { background: #e65100; color: #fff; border: 2px solid #fff; border-radius: 10px; min-width: 22px; height: 18px; line-height: 15px; font-size: 11px; font-weight: 700; text-align: center; padding: 0 3px; box-sizing: border-box; }
+.chk { display: block; margin-top: 8px; font-size: 13px; }
+.lv { padding: 6px 0; border-bottom: 1px solid #eee; font-size: 13px; }
+.lv .big { font-size: 20px; font-weight: 700; color: #1565c0; }
+#lvlbox { font-size: 13px; padding-bottom: 40px; }

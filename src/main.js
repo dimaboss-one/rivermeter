@@ -14,6 +14,7 @@ let route = null;  // {coords, cum}
 let objects = [];
 let seq = 0;
 
+maplibregl.setWorkerUrl(import.meta.env.BASE_URL + 'maplibre-gl-worker.mjs');
 const map = new maplibregl.Map({ container: 'map', style: baseStyle, center: [27.56, 53.9], zoom: 11, canvasContextAttributes: { preserveDrawingBuffer: true } });
 map.addControl(new maplibregl.NavigationControl());
 map.addControl(new maplibregl.GeolocateControl({ trackUserLocation: true }));
@@ -27,8 +28,6 @@ map.on('load', () => {
   map.addLayer({ id: 'rivers', type: 'line', source: 'rivers', paint: { 'line-color': '#1e88e5', 'line-width': 1.5, 'line-opacity': 0.6 } });
   map.addSource('route', { type: 'geojson', data: empty });
   map.addLayer({ id: 'route', type: 'line', source: 'route', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#8e24aa', 'line-width': 5 } });
-  map.addSource('objs', { type: 'geojson', data: empty });
-  map.addLayer({ id: 'objs', type: 'circle', source: 'objs', paint: { 'circle-color': '#e65100', 'circle-radius': 6, 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 } });
   restore();
   loadView();
 });
@@ -66,7 +65,7 @@ map.on('click', async (e) => {
 
 // радиус притягивания: 40 px экрана в метрах
 function snapRadius() {
-  const mpp = (156543.03 * Math.cos((map.getCenter().lat * Math.PI) / 180)) / 2 ** map.getZoom();
+  const mpp = (78271.517 * Math.cos((map.getCenter().lat * Math.PI) / 180)) / 2 ** map.getZoom();
   return Math.max(30, 40 * mpp);
 }
 
@@ -91,6 +90,7 @@ async function addPoint(p) {
 function makeMarker(lonlat) {
   const el = document.createElement('div');
   el.className = 'wp';
+  el.addEventListener('click', (e) => e.stopPropagation());
   const m = new maplibregl.Marker({ element: el, draggable: true }).setLngLat(lonlat).addTo(map);
   m.on('dragend', () => {
     const i = wps.findIndex((w) => w.marker === m);
@@ -140,6 +140,7 @@ function refresh() {
     el.innerHTML = `${i + 1}<span>${fmtKm(w.fromStart)}${i ? `<br>+${fmtKm(w.fromPrev)}` : ''}</span>`;
   });
   renderObjects();
+  updateLevels();
   $('total').textContent = route ? 'Всего: ' + fmtKm(acc) : '';
   $('pts').innerHTML = '<tr><th>№<th>От старта<th>От прошлой</tr>' +
     wps.map((w, i) => `<tr><td>${i + 1}<td>${fmtKm(w.fromStart)}<td>${i ? fmtKm(w.fromPrev) : '—'}`).join('');
@@ -172,14 +173,49 @@ async function findObjects() {
 
 const riverName = () => wps[0]?.river || '';
 
+let objMarkers = [];
 function renderObjects() {
-  map.getSource('objs').setData({
-    type: 'FeatureCollection',
-    features: objects.map((o) => ({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: o.lonlat } })),
-  });
+  objMarkers.forEach((m) => m.remove());
+  objMarkers = [];
+  if ($('showObjs').checked) {
+    objects.forEach((o, i) => {
+      const el = document.createElement('div');
+      el.className = 'ob';
+      el.textContent = 'о' + (i + 1);
+      el.title = `${o.type} ${o.name}`.trim();
+      el.addEventListener('click', (e) => e.stopPropagation());
+      objMarkers.push(new maplibregl.Marker({ element: el }).setLngLat(o.lonlat).addTo(map));
+    });
+  }
   $('objs').innerHTML = (riverName() ? `<tr><td colspan="4"><b>🏞 Река: ${riverName()}</b></tr>` : '') + '<tr><th>№<th>Объект<th>От старта<th>От точки</tr>' +
     objects.map((o, i) => `<tr><td>о${i + 1}<td>${o.icon} ${o.type}${o.name ? ' «' + o.name + '»' : ''}<td>${fmtKm(o.d)}<td>${fmtKm(o.fromPrev)}`).join('');
 }
+$('showObjs').onchange = renderObjects;
+
+// ---- уровень воды (данные allrivers.info раз в сутки)
+let levels = null, levelsFor = '';
+async function updateLevels() {
+  const box = $('lvlbox');
+  const f = wps[0];
+  const k = f ? f.lonlat.join() + '|' + riverName() : '';
+  if (k === levelsFor) return;
+  levelsFor = k;
+  if (!f) { box.innerHTML = ''; gauge = null; return; }
+  try { levels ??= await fetch(import.meta.env.BASE_URL + 'data/levels.json').then((r) => r.json()); }
+  catch { box.textContent = 'Данные об уровне воды пока недоступны.'; return; }
+  const near = levels.gauges.map((g) => ({ g, d: haversine(f.lonlat, [g.lon, g.lat]) })).sort((a, b) => a.d - b.d);
+  const same = near.filter((x) => riverName() && nkey(x.g.river) === nkey(riverName()) && x.d < 60000);
+  const pick = (same.length ? same : near.filter((x) => x.d < 25000)).slice(0, 2);
+  gauge = pick[0]?.g || null;
+  const when = new Date(levels.updated).toLocaleDateString('ru-RU');
+  box.innerHTML = pick.length
+    ? pick.map(({ g, d }) => `<div class="lv"><b>${g.place}</b> (р. ${g.river}, ${fmtKm(d)} от старта)<br>` +
+        `${g.level != null ? `<span class="big">${g.level} см</span>${g.delta != null ? ` (${g.delta > 0 ? '+' : ''}${g.delta})` : ''}` : 'уровень не указан'}` +
+        `${g.temp != null ? ` · вода ${g.temp}°C` : ''}<br><small>измерено ${g.date || '—'} · <a href="${g.url}" target="_blank">на allrivers.info</a></small></div>`).join('') +
+      `<small>Данные обновляются раз в сутки (последний сбор ${when}).</small>`
+    : 'Рядом с первой точкой нет гидропоста allrivers.info (в радиусе 25 км).';
+}
+let gauge = null;
 
 $('undo').onclick = () => {
   const w = wps.pop(); if (!w) return;
@@ -317,7 +353,7 @@ $('wm').onclick = async () => {
   const slug = Object.entries(wm).find(([n]) => nkey(n) === nkey(r))?.[1];
   open(slug ? 'https://wmbel.by/index.php/marshruty/' + slug : 'https://wmbel.by/index.php/component/search/?searchword=' + encodeURIComponent(r));
 };
-$('lvl').onclick = () => open('https://allrivers.info/region/belarus');
+$('lvl').onclick = () => open(gauge ? gauge.url : 'https://allrivers.info/region/belarus');
 
 // ---- поиск реки: исток / середина / устье
 let rivers = null;
@@ -353,3 +389,5 @@ $('q').oninput = async () => {
     map.flyTo({ center: r[b.dataset.p], zoom: 14 });
   };
 };
+
+window.rm = { map, addPoint, graph };
